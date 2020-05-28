@@ -63,6 +63,34 @@ defmodule TracerTest do
     end
   end
 
+  defmodule CompletelyTraced do
+    use NewRelic.Tracer
+
+    @trace_all true
+
+    def fun, do: nil
+
+    def funny, do: nil
+
+    def call_priv(), do: priv()
+
+    defp priv(), do: :priv
+  end
+
+  defmodule PublicTraced do
+    use NewRelic.Tracer
+
+    @trace_all true
+
+    def fun, do: nil
+
+    def funny, do: nil
+
+    def call_priv(), do: priv()
+
+    defp priv(), do: :priv
+  end
+
   test "function that has error" do
     TestHelper.restart_harvest_cycle(Collector.CustomEvent.HarvestCycle)
 
@@ -215,5 +243,39 @@ defmodule TracerTest do
 
     assert %{} == NewRelic.Util.AttrStore.collect(NewRelic.Transaction.Reporter, self())
     assert %{} == NewRelic.Util.AttrStore.collect(NewRelic.Transaction.Reporter.Tracking, self())
+  end
+
+  test "trace all functions for a module with @trace_all true" do
+    TestHelper.restart_harvest_cycle(Collector.CustomEvent.HarvestCycle)
+
+    CompletelyTraced.fun()
+
+    TestHelper.trigger_report(NewRelic.Aggregate.Reporter)
+    events = TestHelper.gather_harvest(Collector.CustomEvent.Harvester)
+
+    assert Enum.find(events, fn [fun_event, event, _] ->
+             event[:category] == :Metric && event[:mfa] == "TracerTest.CompletelyTraced.fun/0" &&
+               event[:call_count] == 1
+           end)
+
+    CompletelyTraced.funny()
+
+    TestHelper.trigger_report(NewRelic.Aggregate.Reporter)
+    events = TestHelper.gather_harvest(Collector.CustomEvent.Harvester)
+
+    assert Enum.find(events, fn [fun_event, event, _] ->
+             event[:category] == :Metric && event[:mfa] == "TracerTest.CompletelyTraced.funny/0" &&
+               event[:call_count] == 1
+           end)
+
+    CompletelyTraced.call_priv()
+
+    TestHelper.trigger_report(NewRelic.Aggregate.Reporter)
+    events = TestHelper.gather_harvest(Collector.CustomEvent.Harvester)
+
+    assert Enum.find(events, fn [fun_event, event, _] ->
+             event[:category] == :Metric && event[:mfa] == "TracerTest.CompletelyTraced.priv/0" &&
+               event[:call_count] == 1
+           end)
   end
 end

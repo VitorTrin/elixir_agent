@@ -3,10 +3,14 @@ defmodule NewRelic.Tracer.Macro do
 
   # Function Tracer Macros
   #   1) __on_definition__: When a function is defined & it's been marked to @trace, we
-  #        store information about the function in module attributes
+  #        store information about the function in module attributes.
+  #        We also consider @trace_all when deciding if we should store information
+  #        in this step.
   #   2) __before_compile__: We take the list of functions that are marked to @trace and:
   #        a) Make them overridable
   #        b) Re-define them with our tracing code wrapped around the original logic
+  #   3) __after_compile__: We delete @trace_all to avoid compilation warnings for
+  #        the compiled module
 
   @moduledoc false
 
@@ -27,9 +31,9 @@ defmodule NewRelic.Tracer.Macro do
   end
 
   def __on_definition__(%{module: module}, access, name, args, guards, do: body) do
-    if trace_info =
-         trace_function?(module, name, length(args))
-         |> trace_deprecated?(module, name) do
+    if module
+       |> trace_function?(name, length(args), access)
+       |> trace_deprecated?(module, name) do
       Module.put_attribute(module, :nr_tracers, %{
         module: module,
         access: access,
@@ -37,10 +41,10 @@ defmodule NewRelic.Tracer.Macro do
         args: args,
         guards: guards,
         body: body,
-        trace_info: trace_info
+        trace_info: true
       })
 
-      Module.put_attribute(module, :nr_last_tracer, {name, length(args), trace_info})
+      Module.put_attribute(module, :nr_last_tracer, {name, length(args), true})
       Module.delete_attribute(module, :trace)
     end
   end
@@ -54,12 +58,26 @@ defmodule NewRelic.Tracer.Macro do
     end
   end
 
-  def trace_function?(module, name, arity),
-    do:
-      trace_function?(:via_annotation, module) ||
-        trace_function?(:via_multiple_heads, module, name, arity)
+  defmacro __after_compile__(%{module: module}) do
+    Module.delete_attribute(module, :trace_all)
+  end
 
-  def trace_function?(:via_annotation, module), do: Module.get_attribute(module, :trace)
+  def trace_function?(:via_trace_annotation, module), do: Module.get_attribute(module, :trace)
+
+  def trace_function?(:via_trace_all_annotation, module, access) do
+    module
+    |> Module.get_attribute(:trace_all)
+    |> case do
+      true ->
+        true
+
+      :public ->
+        access == :def
+
+      _ ->
+        false
+    end
+  end
 
   def trace_function?(:via_multiple_heads, module, name, arity) do
     case Module.get_attribute(module, :nr_last_tracer) do
@@ -67,6 +85,12 @@ defmodule NewRelic.Tracer.Macro do
       _ -> false
     end
   end
+
+  def trace_function?(module, name, arity, access),
+    do:
+      trace_function?(:via_trace_annotation, module) ||
+        trace_function?(:via_trace_all_annotation, module, access) ||
+        trace_function?(:via_multiple_heads, module, name, arity)
 
   def trace_deprecated?({_, category: :datastore}, module, name) do
     Logger.warn(
